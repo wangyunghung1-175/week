@@ -1,0 +1,16 @@
+{
+  "name": "雙福輔導團 週報系統",
+  "short_name": "雙福週報",
+  "description": "工作週報時數登錄與團隊彙整系統",
+  "start_url": "/weekly",
+  "display": "standalone",
+  "background_color": "#f4f1eb",
+  "theme_color": "#1a3a5c",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "categories": ["productivity", "business"],
+  "lang": "zh-TW"
+}

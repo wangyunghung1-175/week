@@ -1,0 +1,520 @@
+'use client';
+// app/weekly/page.tsx
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { createClient, getWeekDates, getExpectedHours, getCurrentWeek, formatDate, WORK_ITEMS, CORE_GOALS, GOAL_COLORS, type CoreGoal } from '../../lib/supabase';
+import { useAuth } from '../layout';
+
+// ─── Types ────────────────────────────────────────────────────────
+interface SavedItem { key: string; goal: string; hours: number; note: string; }
+interface WeekData  { items: SavedItem[]; notes: string; 休假: number; 加班: number; 交通: number; expected: number; actual: number; diff: number; }
+interface AccState  { collapsed: Record<string,boolean>; pinned: Record<string,boolean>; groupOrder: string[]; itemOrder: Record<string,string[]>; }
+
+const SPECIAL = ['休假', '加班', '交通'] as const;
+
+// ─── Helpers ─────────────────────────────────────────────────────
+function loadState<T>(key: string, def: T): T {
+  try { const s = localStorage.getItem(key); return s ? { ...def, ...JSON.parse(s) } : def; } catch { return def; }
+}
+function saveState(key: string, val: unknown) {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+}
+
+function buildGroups(customItems: any[], accState: AccState) {
+  const map: Record<string, { goal: CoreGoal; subcat: string; color: string; items: any[] }> = {};
+  const defaultOrder: string[] = [];
+  const all = [...WORK_ITEMS, ...customItems];
+
+  all.forEach((row, idx) => {
+    const gk = `${row.goal}|${row.subcat}`;
+    if (!map[gk]) {
+      map[gk] = { goal: row.goal as CoreGoal, subcat: row.subcat, color: GOAL_COLORS[row.goal as CoreGoal] || '#888', items: [] };
+      defaultOrder.push(gk);
+    }
+    const itemKey = `${row.goal}|${row.subcat}|${row.cat}|${row.item || ('c_' + idx)}`;
+    map[gk].items.push({ ...row, key: itemKey });
+  });
+
+  // Apply saved item order
+  Object.keys(map).forEach(gk => {
+    const saved = accState.itemOrder[gk];
+    if (saved?.length) {
+      const byKey: Record<string,any> = {};
+      map[gk].items.forEach(i => byKey[i.key] = i);
+      const ordered: any[] = [];
+      saved.forEach(k => { if (byKey[k]) { ordered.push(byKey[k]); delete byKey[k]; } });
+      Object.values(byKey).forEach(i => ordered.push(i));
+      map[gk].items = ordered;
+    }
+  });
+
+  const order = accState.groupOrder.length
+    ? accState.groupOrder.filter(gk => map[gk]).map(gk => map[gk])
+    : defaultOrder.map(gk => map[gk]);
+
+  return { groups: order, defaultOrder };
+}
+
+// ─── Main component ───────────────────────────────────────────────
+export default function WeeklyPage() {
+  const { user } = useAuth();
+  const supabase  = createClient();
+
+  const [week,     setWeek]     = useState(getCurrentWeek());
+  const [weekData, setWeekData] = useState<Record<string, WeekData>>({});
+  const [accState, setAccState] = useState<AccState>({ collapsed:{}, pinned:{}, groupOrder:[], itemOrder:{} });
+  const [customItems, setCustomItems] = useState<any[]>([]);
+  const [notes, setNotes]    = useState('');
+  const [specials, setSpecials] = useState<Record<string,number>>({ 休假:0, 加班:0, 交通:0 });
+  const [hours, setHours]    = useState<Record<string,number>>({});
+  const [itemNotes, setItemNotes] = useState<Record<string,string>>({});
+  const [saving, setSaving]  = useState(false);
+  const [toast, setToast]    = useState('');
+  const [toastType, setToastType] = useState('');
+  const [pinView, setPinView] = useState<'week'|'month'|'year'>('week');
+  const [showModal, setShowModal] = useState(false);
+  const [modalGoal, setModalGoal] = useState('');
+  const [modalSubcat, setModalSubcat] = useState('');
+  const [modalCat, setModalCat] = useState('');
+  const [modalItem, setModalItem] = useState('');
+  const dragItem = useRef<string | null>(null);
+
+  // Load state from localStorage
+  useEffect(() => {
+    const acc = loadState<AccState>('sf_acc', { collapsed:{}, pinned:{}, groupOrder:[], itemOrder:{} });
+    const wd  = loadState<Record<string,WeekData>>('sf_weekly', {});
+    const ci  = loadState<any[]>('sf_custom_items', []);
+    setAccState(acc);
+    setWeekData(wd);
+    setCustomItems(ci);
+  }, []);
+
+  // When week changes, load that week's data into local state
+  useEffect(() => {
+    const d = weekData[week];
+    setHours(Object.fromEntries((d?.items || []).map(i => [i.key, i.hours])));
+    setItemNotes(Object.fromEntries((d?.items || []).map(i => [i.key, i.note])));
+    setSpecials({ 休假: d?.['休假']||0, 加班: d?.['加班']||0, 交通: d?.['交通']||0 });
+    setNotes(d?.notes || '');
+  }, [week]);
+
+  const showToast = (msg: string, type = '') => {
+    setToast(msg); setToastType(type);
+    setTimeout(() => setToast(''), 3000);
+  };
+
+  // Computed stats
+  const expected = getExpectedHours(week);
+  const totalWork = Object.values(hours).reduce((s, h) => s + (h||0), 0);
+  const actual    = totalWork - (specials['休假']||0) + (specials['加班']||0);
+  const diff      = actual - expected;
+
+  // Week date range
+  const { mon, sun } = getWeekDates(week);
+  const holidayInfo = (() => {
+    const { holidays, makeupDays } = require('../../lib/supabase').TW_HOLIDAYS[mon.getFullYear()] || { holidays: new Set(), makeupDays: new Set() };
+    const NAMES: Record<string,string> = { '01-01':'元旦','02-28':'和平紀念日','04-03':'兒童節補休','04-04':'兒童節','04-05':'清明節','05-01':'勞動節','10-10':'國慶日' };
+    const h: string[] = [], m: string[] = [];
+    for (let d = new Date(mon); d <= sun; d.setDate(d.getDate()+1)) {
+      const key = d.toISOString().slice(0,10);
+      if (holidays.has(key)) h.push(NAMES[key.slice(5)] || '國定假日');
+      if (makeupDays.has(key)) m.push(`${formatDate(d)}補班`);
+    }
+    return { holidays: [...new Set(h)], makeups: m };
+  })();
+
+  const { groups } = buildGroups(customItems, accState);
+
+  const toggleGroup = (gk: string) => {
+    const next = { ...accState, collapsed: { ...accState.collapsed, [gk]: !accState.collapsed[gk] } };
+    setAccState(next); saveState('sf_acc', next);
+  };
+
+  const togglePin = (key: string) => {
+    const next = { ...accState, pinned: { ...accState.pinned, [key]: !accState.pinned[key] } };
+    setAccState(next); saveState('sf_acc', next);
+  };
+
+  const moveGroup = (gk: string, dir: -1|1) => {
+    const order = accState.groupOrder.length ? [...accState.groupOrder] : groups.map(g => `${g.goal}|${g.subcat}`);
+    const idx = order.indexOf(gk);
+    if (idx < 0) return;
+    const ni = idx + dir;
+    if (ni < 0 || ni >= order.length) return;
+    [order[idx], order[ni]] = [order[ni], order[idx]];
+    const next = { ...accState, groupOrder: order };
+    setAccState(next); saveState('sf_acc', next);
+  };
+
+  const saveWeek = async () => {
+    setSaving(true);
+    const items: SavedItem[] = Object.entries(hours)
+      .filter(([,h]) => h > 0 || itemNotes[_])
+      .map(([key, h]) => ({ key, goal: key.split('|')[0], hours: h||0, note: itemNotes[key]||'' }));
+
+    const exp = expected;
+    const act = totalWork - (specials['休假']||0) + (specials['加班']||0);
+    const d: WeekData = { items, notes, ...specials as any, expected: exp, actual: act, diff: act - exp };
+
+    const next = { ...weekData, [week]: d };
+    setWeekData(next); saveState('sf_weekly', next);
+
+    // Sync to Supabase
+    if (user) {
+      const now = new Date().toISOString();
+      try {
+        await supabase.from('weekly_summary').upsert({
+          user_name: user.email, week_key: week,
+          expected_hours: exp, actual_hours: act,
+          leave_hours: specials['休假']||0, ot_hours: specials['加班']||0,
+          traffic_hours: specials['交通']||0, diff_hours: act - exp,
+          notes, updated_at: now,
+        }, { onConflict: 'user_name,week_key' });
+
+        // Delete + re-insert items
+        await supabase.from('work_items').delete().eq('user_name', user.email).eq('week_key', week);
+        if (items.length) {
+          const p = items.map(i => ({ user_name: user.email, week_key: week, goal: i.goal, subcat: i.key.split('|')[1]||'', category: i.key.split('|')[2]||'', item_name: i.key.split('|')[3]||'', hours: i.hours, note: i.note, updated_at: now }));
+          await supabase.from('work_items').insert(p);
+        }
+        showToast('✅ 已儲存並同步', 'success');
+      } catch (e: any) {
+        showToast('本機已儲存，雲端同步失敗：' + e.message, 'error');
+      }
+    } else {
+      showToast('✅ 本機已儲存', 'success');
+    }
+    setSaving(false);
+  };
+
+  const pinnedKeys = Object.keys(accState.pinned).filter(k => accState.pinned[k]);
+  const allItemDefs = groups.flatMap(g => g.items);
+
+  return (
+    <div>
+      {/* ── Week selector ── */}
+      <div style={{ background:'white', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'12px 16px', marginBottom:'14px', display:'flex', alignItems:'center', gap:'10px', flexWrap:'wrap', boxShadow:'var(--shadow)' }}>
+        <label style={{ fontWeight:600, color:'var(--primary)', fontSize:'13px' }}>選擇週別</label>
+        <input type="week" value={week} onChange={e => setWeek(e.target.value)}
+          style={{ padding:'5px 10px', border:'1px solid var(--border)', borderRadius:'6px', fontSize:'13px', fontFamily:'inherit' }} />
+        <div style={{ fontFamily:'DM Mono', fontSize:'13px', color:'var(--accent)', background:'rgba(232,135,42,0.08)', padding:'4px 10px', borderRadius:'5px', border:'1px solid rgba(232,135,42,0.2)' }}>
+          {mon.getFullYear()}/{formatDate(mon)} – {formatDate(sun)}
+        </div>
+        <div style={{ fontSize:'11px', padding:'3px 8px', borderRadius:'20px', background:'rgba(46,139,87,0.1)', color:'var(--success)', border:'1px solid rgba(46,139,87,0.25)' }}>
+          工作日 {Math.round(expected / 8)}天 ({expected}h)
+          {holidayInfo.holidays.length > 0 && `　🏮 ${holidayInfo.holidays.join('・')}`}
+          {holidayInfo.makeups.length > 0 && `　⚠ ${holidayInfo.makeups.join('・')}`}
+        </div>
+        <div style={{ flex:1 }} />
+        <button onClick={() => { const [y,w]=week.split('-W'); let wn=+w-1,yr=+y; if(wn<1){yr--;wn=52;} setWeek(`${yr}-W${String(wn).padStart(2,'0')}`); }}
+          style={{ padding:'5px 12px', background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:'6px', cursor:'pointer', fontSize:'13px' }}>◀</button>
+        <button onClick={() => { const [y,w]=week.split('-W'); let wn=+w+1,yr=+y; if(wn>52){yr++;wn=1;} setWeek(`${yr}-W${String(wn).padStart(2,'0')}`); }}
+          style={{ padding:'5px 12px', background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:'6px', cursor:'pointer', fontSize:'13px' }}>▶</button>
+        <button onClick={saveWeek} disabled={saving}
+          style={{ padding:'6px 16px', background:'var(--primary)', color:'white', border:'none', borderRadius:'6px', cursor:saving?'default':'pointer', fontSize:'13px', fontWeight:600, fontFamily:'inherit', opacity:saving?0.7:1 }}>
+          {saving ? '儲存中…' : '💾 儲存'}
+        </button>
+      </div>
+
+      {/* ── KPI row ── */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:'8px', marginBottom:'14px' }}>
+        {[
+          { label:'應工作時數', val: expected,           cls: '' },
+          { label:'實際工作時數', val: actual.toFixed(1),  cls: 'accent' },
+          { label:'休假時數',   val: (specials['休假']||0).toFixed(1), cls: '' },
+          { label:'加班時數',   val: (specials['加班']||0).toFixed(1), cls: '' },
+          { label:'時數差異',   val: (diff>=0?'+':'')+diff.toFixed(1), cls: diff>=0?'success':'danger' },
+        ].map(k => (
+          <div key={k.label} className="kpi-card">
+            <div className={`kpi-val ${k.cls}`}>{k.val}</div>
+            <div className="kpi-label">{k.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Pinned section ── */}
+      {pinnedKeys.length > 0 && (
+        <div style={{ marginBottom:'10px', border:'2px solid rgba(255,193,7,0.35)', borderRadius:'var(--radius)', background:'white', boxShadow:'var(--shadow)', overflow:'hidden' }}>
+          <div style={{ background:'rgba(255,200,50,0.06)', padding:'10px 14px', display:'flex', alignItems:'center', justifyContent:'space-between', borderBottom:'1px solid var(--border)' }}>
+            <div style={{ fontWeight:700, fontSize:'13px', display:'flex', alignItems:'center', gap:'6px' }}>
+              📌 釘選項目
+              <span style={{ fontSize:'11px', color:'var(--text3)', fontWeight:400 }}>({pinnedKeys.length} 個)</span>
+            </div>
+            <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
+              {(['week','month','year'] as const).map(v => (
+                <button key={v} onClick={() => setPinView(v)}
+                  style={{ padding:'3px 10px', border:'none', cursor:'pointer', fontSize:'11px', fontWeight:600, fontFamily:'inherit', borderRadius:'5px', background: pinView===v?'var(--primary)':'var(--surface2)', color: pinView===v?'white':'var(--text2)' }}>
+                  {v==='week'?'週':v==='month'?'月':'年'}
+                </button>
+              ))}
+            </div>
+          </div>
+          {pinView === 'week' ? (
+            pinnedKeys.map(pk => {
+              const def = allItemDefs.find(d => d.key === pk);
+              if (!def) return null;
+              return <ItemRow key={pk} def={def} hours={hours} itemNotes={itemNotes} setHours={setHours} setItemNotes={setItemNotes} pinned={true} onPin={togglePin} />;
+            })
+          ) : (
+            <PinnedCrossView mode={pinView} week={week} pinnedKeys={pinnedKeys} allItemDefs={allItemDefs} weekData={weekData} />
+          )}
+        </div>
+      )}
+
+      {/* ── Accordion groups ── */}
+      {groups.map(group => {
+        const gk = `${group.goal}|${group.subcat}`;
+        const collapsed = !!accState.collapsed[gk];
+        const groupHrs = group.items.reduce((s, i) => s + (hours[i.key]||0), 0);
+        return (
+          <div key={gk} className={`acc-group ${collapsed?'collapsed':''}`}>
+            <div className="acc-header" onClick={() => toggleGroup(gk)}>
+              <div className="acc-goal-band" style={{ background: group.color }} />
+              <div style={{ flex:1, padding:'10px 10px 10px 8px' }}>
+                <div style={{ fontSize:'10px', fontWeight:700, letterSpacing:'0.06em', textTransform:'uppercase', color: group.color, opacity:0.8 }}>{group.goal}</div>
+                <div style={{ fontSize:'13px', fontWeight:700, color:'var(--primary)' }}>{group.subcat}</div>
+                <div style={{ fontSize:'11px', color:'var(--text3)', marginTop:'2px' }}>{group.items.length} 個項目</div>
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', gap:'1px', padding:'0 6px' }} onClick={e => e.stopPropagation()}>
+                <button onClick={() => moveGroup(gk,-1)} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text3)', fontSize:'11px', padding:'2px 4px', borderRadius:'3px' }}>▲</button>
+                <button onClick={() => moveGroup(gk, 1)} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text3)', fontSize:'11px', padding:'2px 4px', borderRadius:'3px' }}>▼</button>
+              </div>
+              <div className={`hours-badge ${groupHrs>0?'has-hours':''}`} style={{ margin:'0 8px' }}>{groupHrs>0?groupHrs.toFixed(1)+'h':'–'}</div>
+              <div className="acc-toggle">›</div>
+            </div>
+            <div className="acc-body" style={{ maxHeight: collapsed?'0':'2000px' }}>
+              {group.items.map(def => (
+                <ItemRow key={def.key} def={def} hours={hours} itemNotes={itemNotes} setHours={setHours} setItemNotes={setItemNotes} pinned={!!accState.pinned[def.key]} onPin={togglePin} />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* ── Special hours + summary ── */}
+      <div style={{ background:'white', border:'1px solid var(--border)', borderRadius:'var(--radius)', marginBottom:'10px', overflow:'hidden', boxShadow:'var(--shadow)' }}>
+        <div style={{ padding:'9px 14px', background:'var(--surface2)', borderBottom:'1px solid var(--border)', fontWeight:700, fontSize:'12px', color:'var(--primary)' }}>特殊時數 &amp; 工時統計</div>
+        {SPECIAL.map(label => (
+          <div key={label} style={{ display:'flex', alignItems:'center', padding:'8px 14px', borderBottom:'1px solid var(--border)', gap:'10px' }}>
+            <div className="drag-handle" style={{ cursor:'default', opacity:0.15 }}>⠿</div>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:'13px', fontWeight:600 }}>{label}</div>
+              <div style={{ fontSize:'11px', color:'var(--text3)' }}>{label==='休假'?'特休/病假/事假':label==='加班'?'超時工作':'外出交通時數'}</div>
+            </div>
+            <input type="number" min={0} max={100} step={0.5} value={specials[label]||''} placeholder="0"
+              onChange={e => setSpecials(s => ({ ...s, [label]: parseFloat(e.target.value)||0 }))}
+              style={{ width:'72px', textAlign:'center', padding:'5px', border:'1px solid var(--border)', borderRadius:'6px', fontFamily:'DM Mono', fontSize:'13px' }}
+            />
+          </div>
+        ))}
+        <div style={{ display:'flex', gap:'24px', flexWrap:'wrap', padding:'10px 16px', background:'rgba(232,135,42,0.04)' }}>
+          {[['應工作時數', expected],['實際工作時數', actual.toFixed(1)],['時數差異', (diff>=0?'+':'')+diff.toFixed(1)]].map(([l,v]) => (
+            <div key={l as string} style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
+              <div style={{ fontSize:'10px', color:'var(--text3)', marginBottom:'2px' }}>{l}</div>
+              <strong style={{ fontFamily:'DM Mono', fontSize:'14px', color: l==='時數差異' ? (diff>=0?'var(--success)':'var(--danger)') : l==='實際工作時數'?'var(--accent)':'var(--primary)' }}>{v}</strong>
+            </div>
+          ))}
+          <div style={{ fontSize:'11px', color:'var(--text3)', alignSelf:'center' }}>工作總時數 − 休假 ＋ 加班</div>
+        </div>
+      </div>
+
+      {/* ── Notes + add ── */}
+      <div style={{ background:'white', border:'1px solid var(--border)', borderRadius:'var(--radius)', overflow:'hidden', boxShadow:'var(--shadow)' }}>
+        <div style={{ padding:'9px 14px', background:'var(--surface2)', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <div style={{ fontWeight:700, fontSize:'12px', color:'var(--primary)' }}>週報備忘 / 說明</div>
+          <button onClick={() => setShowModal(true)}
+            style={{ padding:'5px 12px', background:'rgba(26,58,92,0.08)', border:'1px solid var(--border)', borderRadius:'6px', cursor:'pointer', fontSize:'12px', color:'var(--primary)', fontWeight:600, fontFamily:'inherit' }}>
+            ＋ 新增項目
+          </button>
+        </div>
+        <div style={{ padding:'12px 14px' }}>
+          <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="本週重要事項、待追蹤事項…"
+            style={{ width:'100%', minHeight:'60px', resize:'vertical', padding:'8px', border:'1px solid var(--border)', borderRadius:'6px', fontSize:'13px', fontFamily:'inherit' }}
+          />
+        </div>
+      </div>
+
+      {/* ── Add item modal ── */}
+      {showModal && (
+        <AddItemModal
+          onClose={() => setShowModal(false)}
+          onAdd={(item) => {
+            const next = [...customItems, item];
+            setCustomItems(next); saveState('sf_custom_items', next);
+          }}
+        />
+      )}
+
+      {/* ── Toast ── */}
+      <div className={`toast ${toast?'show':''} ${toastType}`}>{toast}</div>
+    </div>
+  );
+}
+
+// ─── Item row component ───────────────────────────────────────────
+function ItemRow({ def, hours, itemNotes, setHours, setItemNotes, pinned, onPin }: any) {
+  return (
+    <div className={`acc-item ${pinned?'pinned-item':''}`}>
+      <div className="drag-handle">⠿</div>
+      <div style={{ flex:1, padding:'7px 8px', minWidth:0 }}>
+        <div style={{ fontSize:'13px' }}>{def.item || def.subcat}</div>
+        {def.hint && <div style={{ fontSize:'10px', color:'var(--text3)' }}>{def.hint}</div>}
+      </div>
+      <div style={{ padding:'4px 6px', flexShrink:0 }}>
+        <input type="number" min={0} max={99} step={0.5} value={hours[def.key]||''} placeholder="0"
+          onChange={e => setHours((h: any) => ({ ...h, [def.key]: parseFloat(e.target.value)||0 }))}
+          style={{ width:'68px', textAlign:'center', padding:'5px', border:'1px solid var(--border)', borderRadius:'6px', fontFamily:'DM Mono', fontSize:'13px' }}
+        />
+      </div>
+      <div style={{ padding:'4px 4px', flexShrink:0 }} className="hide-mobile">
+        <input type="text" value={itemNotes[def.key]||''} placeholder="備註"
+          onChange={e => setItemNotes((n: any) => ({ ...n, [def.key]: e.target.value }))}
+          style={{ width:'88px', padding:'5px 7px', border:'1px solid var(--border)', borderRadius:'6px', fontSize:'12px', fontFamily:'inherit' }}
+        />
+      </div>
+      <div style={{ padding:'0 8px', flexShrink:0 }}>
+        <button onClick={() => onPin(def.key)} className={`pin-btn ${pinned?'pinned':''}`} title={pinned?'取消釘選':'釘選'}>📌</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Pinned cross-period view ─────────────────────────────────────
+function PinnedCrossView({ mode, week, pinnedKeys, allItemDefs, weekData }: any) {
+  const { mon } = getWeekDates(week);
+  const yr = mon.getFullYear();
+  const mo = mon.getMonth() + 1;
+
+  const defs = pinnedKeys.map((pk: string) => allItemDefs.find((d: any) => d.key === pk)).filter(Boolean);
+
+  const getHrs = (key: string, wk: string) => {
+    const item = (weekData[wk]?.items || []).find((i: any) => i.key === key);
+    return parseFloat(item?.hours || 0) || 0;
+  };
+
+  if (mode === 'month') {
+    const weeks: string[] = [];
+    for (let w = 1; w <= 53; w++) {
+      const wk = `${yr}-W${String(w).padStart(2,'0')}`;
+      const { mon: m, fri: f } = getWeekDates(wk);
+      if ((m.getFullYear()===yr && m.getMonth()+1===mo) || (f.getFullYear()===yr && f.getMonth()+1===mo)) weeks.push(wk);
+    }
+    return (
+      <div style={{ overflowX:'auto' }}>
+        <table className="pinned-cross-table">
+          <thead><tr>
+            <th>釘選項目</th>
+            {weeks.map(wk => { const { mon: m } = getWeekDates(wk); return <th key={wk}>{formatDate(m)}<br /><span style={{fontWeight:400,opacity:0.7}}>{wk.split('-W')[1]}週</span></th>; })}
+            <th style={{background:'var(--accent)'}}>月計</th>
+          </tr></thead>
+          <tbody>
+            {defs.map((def: any, i: number) => {
+              const total = weeks.reduce((s, wk) => s + getHrs(def.key, wk), 0);
+              return <tr key={def.key} style={{background:i%2?'var(--surface2)':'white'}}>
+                <td style={{borderLeft:`3px solid ${GOAL_COLORS[def.goal as CoreGoal]||'#888'}`}}>{def.item}</td>
+                {weeks.map(wk => { const h = getHrs(def.key, wk); return <td key={wk} style={{fontFamily:'DM Mono',color:h>0?'var(--primary)':'var(--text3)'}}>{h>0?h.toFixed(1):'–'}</td>; })}
+                <td style={{fontFamily:'DM Mono',fontWeight:700,color:total>0?'var(--accent)':'var(--text3)'}}>{total>0?total.toFixed(1):'–'}</td>
+              </tr>;
+            })}
+            <tr className="total-row">
+              <td>週計</td>
+              {weeks.map(wk => { const t = defs.reduce((s: number, d: any) => s+getHrs(d.key,wk), 0); return <td key={wk} style={{fontFamily:'DM Mono'}}>{t>0?t.toFixed(1):'–'}</td>; })}
+              <td style={{fontFamily:'DM Mono',color:'var(--accent)'}}>{defs.reduce((s: number, d: any) => s+weeks.reduce((s2, wk) => s2+getHrs(d.key,wk), 0), 0).toFixed(1)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  // Year view
+  const months = Array.from({length:12}, (_,i) => i+1);
+  const mNames = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  const getMonthHrs = (key: string, m: number) => {
+    let total = 0;
+    for (let w = 1; w <= 53; w++) {
+      const wk = `${yr}-W${String(w).padStart(2,'0')}`;
+      const { mon: md, fri } = getWeekDates(wk);
+      if (md.getFullYear()===yr && md.getMonth()+1===m) total += getHrs(key, wk);
+    }
+    return total;
+  };
+  return (
+    <div style={{ overflowX:'auto' }}>
+      <table className="pinned-cross-table">
+        <thead><tr>
+          <th>釘選項目</th>
+          {mNames.map(m => <th key={m}>{m}</th>)}
+          <th style={{background:'var(--accent)'}}>年計</th>
+        </tr></thead>
+        <tbody>
+          {defs.map((def: any, i: number) => {
+            const total = months.reduce((s,m) => s+getMonthHrs(def.key,m), 0);
+            return <tr key={def.key} style={{background:i%2?'var(--surface2)':'white'}}>
+              <td style={{borderLeft:`3px solid ${GOAL_COLORS[def.goal as CoreGoal]||'#888'}`}}>{def.item}</td>
+              {months.map(m => { const h=getMonthHrs(def.key,m); return <td key={m} style={{fontFamily:'DM Mono',fontSize:'11px',color:h>0?'var(--primary)':'var(--text3)'}}>{h>0?h.toFixed(1):'–'}</td>; })}
+              <td style={{fontFamily:'DM Mono',fontWeight:700,color:total>0?'var(--accent)':'var(--text3)'}}>{total>0?total.toFixed(1):'–'}</td>
+            </tr>;
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── Add item modal ───────────────────────────────────────────────
+function AddItemModal({ onClose, onAdd }: { onClose: ()=>void; onAdd: (item: any)=>void }) {
+  const [goal,   setGoal]   = useState('');
+  const [subcat, setSubcat] = useState('');
+  const [cat,    setCat]    = useState('');
+  const [item,   setItem]   = useState('');
+
+  const goalMap: Record<string, Record<string, Set<string>>> = {};
+  WORK_ITEMS.forEach(r => {
+    if (!goalMap[r.goal]) goalMap[r.goal] = {};
+    if (!goalMap[r.goal][r.subcat]) goalMap[r.goal][r.subcat] = new Set();
+    goalMap[r.goal][r.subcat].add(r.cat);
+  });
+
+  const subcats = goal ? Object.keys(goalMap[goal]||{}) : [];
+  const cats    = goal && subcat ? [...(goalMap[goal]?.[subcat] || new Set())] : [];
+
+  const confirm = () => {
+    if (!goal || !subcat || !item.trim()) return;
+    onAdd({ goal, subcat, cat: cat||'自訂', item: item.trim(), isUserAdded: true });
+    onClose();
+  };
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.45)', zIndex:500, display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }} onClick={e => { if(e.target===e.currentTarget)onClose(); }}>
+      <div style={{ background:'white', borderRadius:'12px', width:'100%', maxWidth:'420px', overflow:'hidden', boxShadow:'0 20px 60px rgba(0,0,0,0.25)' }}>
+        <div style={{ background:'var(--primary)', color:'white', padding:'14px 18px', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <h3 style={{ fontSize:'14px', fontWeight:700, margin:0 }}>＋ 新增工作項目</h3>
+          <button onClick={onClose} style={{ background:'none', border:'none', color:'white', fontSize:'20px', cursor:'pointer', opacity:0.7, lineHeight:1 }}>✕</button>
+        </div>
+        <div style={{ padding:'18px', display:'flex', flexDirection:'column', gap:'14px' }}>
+          {[
+            { label:'核心目標', el: <select value={goal} onChange={e=>{setGoal(e.target.value);setSubcat('');setCat('');}} style={{width:'100%',padding:'7px 10px',border:'1px solid var(--border)',borderRadius:'6px',fontSize:'13px',fontFamily:'inherit'}}>
+              <option value="">請選擇…</option>{CORE_GOALS.map(g=><option key={g} value={g}>{g}</option>)}
+            </select> },
+            { label:'中分類', el: <select value={subcat} onChange={e=>{setSubcat(e.target.value);setCat('');}} style={{width:'100%',padding:'7px 10px',border:'1px solid var(--border)',borderRadius:'6px',fontSize:'13px',fontFamily:'inherit'}} disabled={!goal}>
+              <option value="">{goal?'請選擇…':'請先選核心目標'}</option>{subcats.map(s=><option key={s} value={s}>{s}</option>)}
+            </select> },
+            { label:'項目分類', el: <select value={cat} onChange={e=>setCat(e.target.value)} style={{width:'100%',padding:'7px 10px',border:'1px solid var(--border)',borderRadius:'6px',fontSize:'13px',fontFamily:'inherit'}} disabled={!subcat}>
+              <option value="">{subcat?'請選擇…':'請先選中分類'}</option>{cats.map(c=><option key={c} value={c}>{c}</option>)}<option value="__custom__">自訂分類</option>
+            </select> },
+            { label:'工作事項名稱', el: <input type="text" value={item} onChange={e=>setItem(e.target.value)} placeholder="輸入工作事項名稱…" maxLength={80} onKeyDown={e=>e.key==='Enter'&&confirm()} style={{width:'100%',padding:'7px 10px',border:'1px solid var(--border)',borderRadius:'6px',fontSize:'13px',fontFamily:'inherit'}} /> },
+          ].map(f => (
+            <div key={f.label}>
+              <label style={{ display:'block', fontSize:'11px', fontWeight:700, color:'var(--text2)', marginBottom:'5px', letterSpacing:'0.03em' }}>{f.label}</label>
+              {f.el}
+            </div>
+          ))}
+        </div>
+        <div style={{ padding:'12px 18px', borderTop:'1px solid var(--border)', background:'var(--surface2)', display:'flex', gap:'8px', justifyContent:'flex-end' }}>
+          <button onClick={onClose} style={{ padding:'7px 16px', background:'var(--surface2)', border:'1px solid var(--border)', borderRadius:'6px', cursor:'pointer', fontSize:'13px', fontFamily:'inherit' }}>取消</button>
+          <button onClick={confirm} style={{ padding:'7px 16px', background:'var(--primary)', color:'white', border:'none', borderRadius:'6px', cursor:'pointer', fontSize:'13px', fontWeight:600, fontFamily:'inherit' }}>確認新增</button>
+        </div>
+      </div>
+    </div>
+  );
+}
