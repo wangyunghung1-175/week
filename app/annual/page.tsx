@@ -2,7 +2,7 @@
 // app/annual/page.tsx
 import { useState, useEffect } from 'react';
 import { createClient, CORE_GOALS, GOAL_COLORS, getWeekDates } from '../../lib/supabase';
-import { useAuth } from '../layout';
+import { useAuth } from '../AppShell';
 
 const GOAL_SUBCATS: Record<string, string[]> = {
   '創新驅動': ['政策與服務研發', '國際新知與服務模組'],

@@ -1,8 +1,8 @@
 'use client';
 // app/weekly/page.tsx
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { createClient, getWeekDates, getExpectedHours, getCurrentWeek, formatDate, WORK_ITEMS, CORE_GOALS, GOAL_COLORS, type CoreGoal } from '../../lib/supabase';
-import { useAuth } from '../layout';
+import { useState, useEffect } from 'react';
+import { createClient, getWeekDates, getExpectedHours, getCurrentWeek, formatDate, WORK_ITEMS, CORE_GOALS, GOAL_COLORS, TW_HOLIDAYS, type CoreGoal } from '../../lib/supabase';
+import { useAuth } from '../AppShell';
 
 // ─── Types ────────────────────────────────────────────────────────
 interface SavedItem { key: string; goal: string; hours: number; note: string; }
@@ -111,7 +111,8 @@ export default function WeeklyPage() {
   // Week date range
   const { mon, sun } = getWeekDates(week);
   const holidayInfo = (() => {
-    const { holidays, makeupDays } = require('../../lib/supabase').TW_HOLIDAYS[mon.getFullYear()] || { holidays: new Set(), makeupDays: new Set() };
+    const twData = TW_HOLIDAYS[mon.getFullYear()] ?? { holidays: new Set<string>(), makeupDays: new Set<string>() };
+    const { holidays, makeupDays } = twData;
     const NAMES: Record<string,string> = { '01-01':'元旦','02-28':'和平紀念日','04-03':'兒童節補休','04-04':'兒童節','04-05':'清明節','05-01':'勞動節','10-10':'國慶日' };
     const h: string[] = [], m: string[] = [];
     for (let d = new Date(mon); d <= sun; d.setDate(d.getDate()+1)) {
@@ -119,7 +120,7 @@ export default function WeeklyPage() {
       if (holidays.has(key)) h.push(NAMES[key.slice(5)] || '國定假日');
       if (makeupDays.has(key)) m.push(`${formatDate(d)}補班`);
     }
-    return { holidays: [...new Set(h)], makeups: m };
+    return { holidays: Array.from(new Set<string>(h)), makeups: m };
   })();
 
   const { groups } = buildGroups(customItems, accState);
@@ -148,7 +149,7 @@ export default function WeeklyPage() {
   const saveWeek = async () => {
     setSaving(true);
     const items: SavedItem[] = Object.entries(hours)
-      .filter(([,h]) => h > 0 || itemNotes[_])
+      .filter(([key, h]) => h > 0 || itemNotes[key])
       .map(([key, h]) => ({ key, goal: key.split('|')[0], hours: h||0, note: itemNotes[key]||'' }));
 
     const exp = expected;
@@ -471,12 +472,12 @@ function AddItemModal({ onClose, onAdd }: { onClose: ()=>void; onAdd: (item: any
   const goalMap: Record<string, Record<string, Set<string>>> = {};
   WORK_ITEMS.forEach(r => {
     if (!goalMap[r.goal]) goalMap[r.goal] = {};
-    if (!goalMap[r.goal][r.subcat]) goalMap[r.goal][r.subcat] = new Set();
+  if (!goalMap[r.goal][r.subcat]) goalMap[r.goal][r.subcat] = new Set<string>();
     goalMap[r.goal][r.subcat].add(r.cat);
   });
 
   const subcats = goal ? Object.keys(goalMap[goal]||{}) : [];
-  const cats    = goal && subcat ? [...(goalMap[goal]?.[subcat] || new Set())] : [];
+  const cats = goal && subcat ? Array.from(goalMap[goal]?.[subcat] ?? new Set<string>()) : [];
 
   const confirm = () => {
     if (!goal || !subcat || !item.trim()) return;

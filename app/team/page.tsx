@@ -2,7 +2,7 @@
 // app/team/page.tsx — TypeScript-safe version
 import { useState } from 'react';
 import { createClient, CORE_GOALS, GOAL_COLORS, getWeekDates } from '../../lib/supabase';
-import { useAuth } from '../layout';
+import { useAuth } from '../AppShell';
 import * as XLSX from 'xlsx';
 
 interface MemberStat {
