@@ -1,5 +1,5 @@
 'use client';
-// app/AppShell.tsx — Client Component: auth, nav, login
+// app/AppShell.tsx
 import { useEffect, useState, createContext, useContext } from 'react';
 import { createClient } from '../lib/supabase';
 import type { User } from '@supabase/supabase-js';
@@ -47,7 +47,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   if (loading) {
     return (
       <div style={{ minHeight:'100vh', background:'var(--bg)', display:'flex', alignItems:'center', justifyContent:'center' }}>
-        <div style={{ textAlign:'center', color:'var(--text3)', fontSize:'14px' }}>載入中…</div>
+        <div style={{ color:'var(--text3)', fontSize:'14px' }}>載入中…</div>
       </div>
     );
   }
@@ -62,7 +62,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthCtx.Provider value={{ user, loading }}>
-      {/* Header */}
       <header style={{ background:'var(--primary)', color:'white', padding:'0 16px', height:'52px', display:'flex', alignItems:'center', justifyContent:'space-between', position:'sticky', top:0, zIndex:100, boxShadow:'0 2px 8px rgba(0,0,0,.2)' }}>
         <div>
           <div style={{ fontSize:'14px', fontWeight:700, letterSpacing:'.04em' }}>雙福輔導團 · 工作週報</div>
@@ -73,7 +72,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </button>
       </header>
 
-      {/* Nav */}
       <nav style={{ background:'var(--primary)', borderTop:'1px solid rgba(255,255,255,.1)', display:'flex', overflowX:'auto' }}>
         {TABS.map(t => (
           <button key={t.id} onClick={() => handleNav(t.id, t.href)}
@@ -86,7 +84,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         ))}
       </nav>
 
-      {/* Page content */}
       <main style={{ maxWidth:'1100px', margin:'0 auto', padding:'18px 14px' }}>
         {children}
       </main>
@@ -98,7 +95,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
   const [email, setEmail] = useState('');
   const [pass,  setPass]  = useState('');
-  const [mode,  setMode]  = useState<'login'|'signup'>('login');
+  const [mode,  setMode]  = useState<'login' | 'signup'>('login');
   const [err,   setErr]   = useState('');
   const [ok,    setOk]    = useState('');
   const [busy,  setBusy]  = useState(false);
@@ -118,43 +115,75 @@ function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
     setBusy(false);
   };
 
+  const inputStyle: React.CSSProperties = {
+    width:'100%', padding:'9px 12px',
+    border:'1px solid var(--border)', borderRadius:'7px',
+    fontSize:'14px', fontFamily:'inherit', outline:'none',
+  };
+
   return (
     <div style={{ minHeight:'100vh', background:'var(--bg)', display:'flex', alignItems:'center', justifyContent:'center', padding:'20px' }}>
       <div style={{ background:'white', borderRadius:'14px', padding:'32px 28px', width:'100%', maxWidth:'380px', boxShadow:'0 12px 40px rgba(26,58,92,.13)', border:'1px solid var(--border)' }}>
+
         <div style={{ textAlign:'center', marginBottom:'28px' }}>
           <div style={{ fontSize:'32px', marginBottom:'8px' }}>🏢</div>
           <div style={{ fontSize:'18px', fontWeight:700, color:'var(--primary)' }}>雙福輔導團</div>
           <div style={{ fontSize:'13px', color:'var(--text3)', marginTop:'4px' }}>工作週報系統</div>
         </div>
 
-        {err && <div style={{ background:'rgba(192,57,43,.08)', border:'1px solid rgba(192,57,43,.2)', color:'var(--danger)', borderRadius:'6px', padding:'10px 12px', fontSize:'13px', marginBottom:'14px' }}>{err}</div>}
-        {ok  && <div style={{ background:'rgba(46,139,87,.08)', border:'1px solid rgba(46,139,87,.2)', color:'var(--success)', borderRadius:'6px', padding:'10px 12px', fontSize:'13px', marginBottom:'14px' }}>{ok}</div>}
+        {err && (
+          <div style={{ background:'rgba(192,57,43,.08)', border:'1px solid rgba(192,57,43,.2)', color:'var(--danger)', borderRadius:'6px', padding:'10px 12px', fontSize:'13px', marginBottom:'14px' }}>
+            {err}
+          </div>
+        )}
+        {ok && (
+          <div style={{ background:'rgba(46,139,87,.08)', border:'1px solid rgba(46,139,87,.2)', color:'var(--success)', borderRadius:'6px', padding:'10px 12px', fontSize:'13px', marginBottom:'14px' }}>
+            {ok}
+          </div>
+        )}
 
         <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
-          {[['電子郵件','email',email,setEmail],['密碼','password',pass,setPass]].map(([label,type,val,setter]) => (
-            <div key={label as string}>
-              <label style={{ fontSize:'11px', fontWeight:700, color:'var(--text2)', display:'block', marginBottom:'4px' }}>{label}</label>
-              <input type={type as string} value={val as string}
-                onChange={e => (setter as (v:string)=>void)(e.target.value)}
-                onKeyDown={e => e.key==='Enter' && submit()}
-                placeholder={type==='email'?'you@example.com':'••••••••'}
-                style={{ width:'100%', padding:'9px 12px', border:'1px solid var(--border)', borderRadius:'7px', fontSize:'14px', fontFamily:'inherit', outline:'none' }}
-              />
-            </div>
-          ))}
-          <button onClick={submit} disabled={busy}
-            style={{ background:'var(--primary)', color:'white', border:'none', borderRadius:'8px', padding:'11px', fontSize:'14px', fontWeight:700, cursor:busy?'default':'pointer', fontFamily:'inherit', opacity:busy?0.7:1, marginTop:'4px' }}>
-            {busy ? '處理中…' : mode==='login' ? '登入' : '註冊帳號'}
+          <div>
+            <label style={{ fontSize:'11px', fontWeight:700, color:'var(--text2)', display:'block', marginBottom:'4px' }}>電子郵件</label>
+            <input
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && submit()}
+              placeholder="you@example.com"
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            <label style={{ fontSize:'11px', fontWeight:700, color:'var(--text2)', display:'block', marginBottom:'4px' }}>密碼</label>
+            <input
+              type="password"
+              value={pass}
+              onChange={e => setPass(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && submit()}
+              placeholder="••••••••"
+              style={inputStyle}
+            />
+          </div>
+          <button
+            onClick={submit}
+            disabled={busy}
+            style={{ background:'var(--primary)', color:'white', border:'none', borderRadius:'8px', padding:'11px', fontSize:'14px', fontWeight:700, cursor: busy ? 'default' : 'pointer', fontFamily:'inherit', opacity: busy ? 0.7 : 1, marginTop:'4px' }}
+          >
+            {busy ? '處理中…' : mode === 'login' ? '登入' : '註冊帳號'}
           </button>
         </div>
 
         <div style={{ textAlign:'center', marginTop:'18px', fontSize:'13px', color:'var(--text3)' }}>
-          {mode==='login' ? '還沒有帳號？' : '已有帳號？'}
-          <button onClick={() => { setMode(mode==='login'?'signup':'login'); setErr(''); }}
-            style={{ background:'none', border:'none', color:'var(--accent)', cursor:'pointer', fontWeight:700, fontSize:'13px', marginLeft:'4px', fontFamily:'inherit' }}>
-            {mode==='login' ? '立即註冊' : '返回登入'}
+          {mode === 'login' ? '還沒有帳號？' : '已有帳號？'}
+          <button
+            onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setErr(''); }}
+            style={{ background:'none', border:'none', color:'var(--accent)', cursor:'pointer', fontWeight:700, fontSize:'13px', marginLeft:'4px', fontFamily:'inherit' }}
+          >
+            {mode === 'login' ? '立即註冊' : '返回登入'}
           </button>
         </div>
+
       </div>
     </div>
   );
