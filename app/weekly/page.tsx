@@ -1,6 +1,6 @@
 'use client';
 // app/weekly/page.tsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { createClient, getWeekDates, getExpectedHours, getCurrentWeek, formatDate, WORK_ITEMS, CORE_GOALS, GOAL_COLORS, TW_HOLIDAYS, type CoreGoal } from '../../lib/supabase';
 import { useAuth } from '../AppShell';
 
