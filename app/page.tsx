@@ -1,6 +1,6 @@
 'use client';
 // app/page.tsx — redirect to /weekly
-import { useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 export default function Home() {
   useEffect(() => {
